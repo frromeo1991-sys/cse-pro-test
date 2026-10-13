@@ -1,5 +1,7 @@
 # CSE PRO - aggiornamento del 13 ottobre 2026
 
+Per l'ultima fase (rilievi indipendenti, fotografie per rilievo, archivio ed eliminazione, firma CSE solo nell'ultima pagina) vedere `RILIEVI-ARCHIVIO.md`, che integra le verifiche storiche riportate qui.
+
 ## Analisi del progetto
 
 L'app usa HTML, CSS e JavaScript senza framework. La persistenza principale e' ora in IndexedDB. Per la correzione della quota e la migrazione, vedere anche `ARCHIVIO-INDEXEDDB.md`.
@@ -12,8 +14,8 @@ L'app usa HTML, CSS e JavaScript senza framework. La persistenza principale e' o
 | Vecchi archivi localStorage | Migrati e rimossi solo dopo verifica della copia in IndexedDB |
 | Tecnico | `inspection.general.tecnico` |
 | Rilievi e testi AI | `inspection.findings[]` |
-| Foto del sopralluogo | `inspection.photos[]`, riferimenti ai Blob nello store `media` |
-| Foto delle versioni precedenti | `finding.photos[]`, conservate e modificabili |
+| Foto del rilievo | `finding.photos[]`, riferimenti ai Blob nello store `media` |
+| Foto storiche senza associazione certa | `inspection.photos[]`, conservate finche' assegnate esplicitamente |
 | Dati storici del cantiere | `inspection.siteSnapshot` |
 
 Il PDF viene generato con la libreria jsPDF locale e scaricato; non era e non e' un record archiviato nel database dell'app. I PDF gia' scaricati non vengono modificati o eliminati.
@@ -43,14 +45,14 @@ Il CSE non viene mai dedotto dal tecnico. Nei vecchi report che non contengono i
 
 I record storici sono letti in modo compatibile senza riscrivere tutti i sopralluoghi all'avvio. All'apertura vengono adattati in memoria. Alla modifica vengono mantenuti ID, numero report, data di creazione, stato di archiviazione, campi aggiuntivi, testi e foto. Il salvataggio aggiorna lo stesso record e aggiunge `updatedAt`.
 
-La numerazione dei nuovi report usa il massimo numero gia' assegnato nel cantiere piu' uno; modificare un report non incrementa il numero.
+La numerazione usa il massimo numero assegnato nel cantiere piu' uno, conservato anche dopo eliminazioni in IndexedDB. Modificare un report non incrementa il numero.
 
 ## Snapshot e ruoli
 
 Un nuovo sopralluogo fotografa i dati del cantiere al momento del salvataggio. Il PDF legge:
 
 - "Sopralluogo effettuato da": `general.tecnico` del singolo sopralluogo;
-- "Il CSE p.i.e.": `siteSnapshot.cseName`;
+- "Il CSE p.i.e.": `siteSnapshot.cseName`, soltanto nell'ultima pagina, in basso a destra;
 - Responsabile dei Lavori: `siteSnapshot.responsibleForWorks`, stampato sulla riga successiva all'intestazione.
 
 Riaprire un report mantiene lo snapshot originale, anche se nel frattempo il cantiere e' cambiato. Il pulsante "Aggiorna dati cantiere" sostituisce lo snapshot nel modulo con i dati attuali: la modifica diventa persistente solo salvando il report. I campi specifici del sopralluogo, ad esempio l'impresa affidataria compilata per quel report, restano quelli inseriti.
@@ -63,9 +65,9 @@ Durante la modifica il cantiere del report e' bloccato, per evitare spostamenti 
 
 `completionStatus` distingue BOZZA e COMPLETATO. Il precedente `status` ATTIVO/ARCHIVIATO rimane indipendente e compatibile. I report precedenti vengono considerati completati.
 
-L'archivio offre Apri, Modifica, PDF, Duplica, Archivia/Ripristina e Condividi. Il PDF viene rigenerato dai dati salvati aggiornati; modifiche ancora nel modulo devono essere salvate prima di esportare dall'archivio.
+L'archivio offre Apri, Modifica, PDF, Elimina con conferma, Archivia/Ripristina e Condividi. Duplica non compare nelle card. Il PDF viene rigenerato dai dati salvati aggiornati; modifiche ancora nel modulo devono essere salvate prima di esportare dall'archivio.
 
-Le foto del sopralluogo possono essere mantenute, sostituite, aggiunte o rimosse in modifica. Il pulsante "Aggiungi fotografie" permette di scegliere piu' immagini. Le vecchie foto associate ai singoli rilievi restano visibili in una galleria dedicata. Quando ci sono piu' foto delle due posizioni del format, il PDF usa ulteriori pagine con la stessa griglia fotografica, anziche' omettere gli allegati.
+Le foto di ogni rilievo possono essere mantenute, aggiunte o rimosse in modifica. Ogni galleria ha il proprio "Aggiungi fotografie" con selezione multipla. Le vecchie foto senza associazione certa restano disponibili per l'assegnazione esplicita. Quando ci sono piu' foto delle due posizioni del format, il PDF usa ulteriori pagine del relativo rilievo con la stessa griglia fotografica.
 
 In caso di spazio insufficiente, il salvataggio non sostituisce il record originale e lascia i dati nel modulo per consentire un nuovo tentativo.
 

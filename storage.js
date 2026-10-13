@@ -43,13 +43,14 @@ const CSEStorage = (() => {
 
     async function loadAll() {
         const db = await open();
-        const tx = db.transaction(["sites", "inspections"]);
+        const tx = db.transaction(["sites", "inspections", "meta"]);
         const sites = requestResult(tx.objectStore("sites").getAll());
         const inspections = requestResult(tx.objectStore("inspections").getAll());
-        const values = await Promise.all([sites, inspections]);
+        const meta = requestResult(tx.objectStore("meta").getAll());
+        const values = await Promise.all([sites, inspections, meta]);
         values[0].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
         values[1].sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
-        return { sites: values[0], inspections: values[1] };
+        return { sites: values[0], inspections: values[1], numberCounters: Object.fromEntries(values[2].filter(row => row.id.startsWith("reportNumber:")).map(row => [row.id.slice(13), row.value])) };
     }
 
     async function digest(value) {
@@ -97,7 +98,7 @@ const CSEStorage = (() => {
     }
 
     // All image writes and their parent records commit together, including migration markers.
-    async function commitPrepared(prepared, marker = null, deleteSiteIds = []) {
+    async function commitPrepared(prepared, marker = null, deleteSiteIds = [], deleteInspectionIds = []) {
         const db = await open();
         const tx = db.transaction(ALL_STORES, "readwrite");
         const done = transactionDone(tx);
@@ -105,6 +106,19 @@ const CSEStorage = (() => {
             for (const image of prepared.media) tx.objectStore("media").put(image);
             for (const site of prepared.records.sites || []) tx.objectStore("sites").put(site);
             for (const report of prepared.records.inspections || []) tx.objectStore("inspections").put(report);
+            function retainNumber(siteId, number) {
+                const id = `reportNumber:${siteId}`;
+                const read = tx.objectStore("meta").get(id);
+                read.onsuccess = () => tx.objectStore("meta").put({ id, value: Math.max(read.result?.value || 0, Number(number) || 0) });
+            }
+            const maxima = new Map();
+            for (const report of prepared.records.inspections || []) maxima.set(report.siteId, Math.max(maxima.get(report.siteId) || 0, Number(report.reportNumber) || 0));
+            for (const [siteId, number] of maxima) retainNumber(siteId, number);
+            for (const id of deleteInspectionIds) {
+                const read = tx.objectStore("inspections").get(id);
+                read.onsuccess = () => { if (read.result) retainNumber(read.result.siteId, read.result.reportNumber); };
+                tx.objectStore("inspections").delete(id);
+            }
             for (const id of deleteSiteIds) tx.objectStore("sites").delete(id);
             if (marker) tx.objectStore("meta").put(marker);
 
@@ -141,6 +155,17 @@ const CSEStorage = (() => {
     async function saveSite(site) { return (await saveBatch({ sites: [site] })).sites[0]; }
     async function saveInspection(report) { return (await saveBatch({ inspections: [report] })).inspections[0]; }
     async function deleteSite(id) { await commitPrepared({ records: {}, media: [] }, null, [id]); }
+    async function deleteInspection(id) { await commitPrepared({ records: {}, media: [] }, null, [], [id]); }
+
+    async function addChoice(key, value) {
+        const db = await open();
+        const tx = db.transaction("meta", "readwrite");
+        const done = transactionDone(tx);
+        const id = `choices:${key}`;
+        const read = tx.objectStore("meta").get(id);
+        read.onsuccess = () => tx.objectStore("meta").put({ id, values: [...new Set([value, ...(read.result?.values || [])])] });
+        await done;
+    }
 
     function parseOld(key, raw) {
         if (raw == null) return [];
@@ -258,5 +283,5 @@ const CSEStorage = (() => {
         return migrate();
     }
 
-    return { open, loadAll, get, saveBatch, saveSite, saveInspection, deleteSite, migrateLocalStorage, collectReferences };
+    return { open, loadAll, get, saveBatch, saveSite, saveInspection, deleteSite, deleteInspection, addChoice, migrateLocalStorage, collectReferences };
 })();

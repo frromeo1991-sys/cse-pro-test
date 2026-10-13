@@ -16,7 +16,8 @@ const state = {
     activeSiteId: "",
     findingCounter: 0,
     busy: false,
-    retainedPhotos: ["", ""],
+    retainedPhotos: [],
+    numberCounters: {},
     editingInspectionId: "",
     inspectionSnapshot: null,
     inspectionDirty: false,
@@ -65,6 +66,7 @@ async function bootstrap() {
         const stored = await CSEStorage.loadAll();
         state.sites = stored.sites;
         state.inspections = stored.inspections;
+        state.numberCounters = stored.numberCounters;
         try { state.activeSiteId = localStorage.getItem(STORAGE.activeSite) || ""; } catch { /* A preference must not block the archive. */ }
         await upgradeSiteDefaults();
         ensureDefaultSite();
@@ -115,32 +117,6 @@ function bindEvents() {
     document.getElementById("btn-close-report-view").addEventListener("click", () => document.getElementById("report-view-panel").hidden = true);
     document.getElementById("btn-edit-viewed-report").addEventListener("click", () => handleReportAction("edit", state.viewedInspectionId));
     document.getElementById("btn-pdf-viewed-report").addEventListener("click", () => handleReportAction("pdf", state.viewedInspectionId));
-    [1, 2].forEach(slot => {
-        document.getElementById(`inspection-photo-${slot}`).addEventListener("change", () => previewInspectionPhoto(slot));
-        document.querySelector(`[data-remove-photo='${slot}']`).addEventListener("click", () => {
-            CSEMedia.releaseTemporary(document.getElementById(`inspection-photo-${slot}`).files[0]);
-            CSEMedia.releaseTemporary(state.retainedPhotos[slot - 1]);
-            document.getElementById(`inspection-photo-${slot}`).value = "";
-            state.retainedPhotos[slot - 1] = "";
-            state.inspectionDirty = true;
-            previewInspectionPhoto(slot);
-        });
-    });
-    document.getElementById("inspection-more-photos").addEventListener("change", event => {
-        for (const file of event.target.files) {
-            if (!file.type.startsWith("image/")) {
-                setInspectionStatus("Seleziona soltanto file immagine.", true);
-                continue;
-            }
-            let slot = [0, 1].find(index => !state.retainedPhotos[index] && !document.getElementById(`inspection-photo-${index + 1}`).files.length);
-            if (slot === undefined) slot = Math.max(2, state.retainedPhotos.length);
-            state.retainedPhotos[slot] = file;
-        }
-        event.target.value = "";
-        [1, 2].forEach(previewInspectionPhoto);
-        renderAdditionalPhotos();
-        state.inspectionDirty = true;
-    });
     window.addEventListener("resize", () => {
         els.findingsList.querySelectorAll("textarea").forEach(resizeTextarea);
     });
@@ -405,19 +381,14 @@ function openInspection(report = null, skipConfirm = false) {
         "inspection-technician": general.tecnico,
         "inspection-affidataria": general.affidataria ?? inspectionSite()?.contractor,
         "inspection-referente": general.referenteAffidataria,
-        "inspection-esecutrice": general.esecutrice,
-        "inspection-building": general.fabbricato,
-        "inspection-floor": general.piano,
         "inspection-notes": report?.notes ?? general.notes
     };
     Object.entries(fields).forEach(([id, text]) => setValue(id, text));
-    const suspended = general.sospensioneLavori === "SI" ? "SI" : "NO";
-    document.querySelector(`input[name='inspection-suspended'][value='${suspended}']`).checked = true;
-    const findings = report?.findings?.length ? report.findings : [{}];
+    const model = report ? createReportModel(report) : null;
+    const findings = model?.findings?.length ? model.findings : [{}];
     findings.forEach(addFindingCard);
-    state.retainedPhotos = [...(report?.photos || ["", ""])];
-    [1, 2].forEach(previewInspectionPhoto);
-    renderAdditionalPhotos();
+    state.retainedPhotos = [...(model?.unassignedPhotos || [])];
+    renderUnassignedPhotos();
     setToday();
     renderInspectionSite();
     renderRecentTechnicians();
@@ -428,16 +399,16 @@ function openInspection(report = null, skipConfirm = false) {
 
 function clearInspectionForm() {
     state.retainedPhotos.forEach(CSEMedia.releaseTemporary);
+    [...els.findingsList.children].forEach(card => (card.findingData.photos || []).forEach(CSEMedia.releaseTemporary));
     els.inspectionForm.querySelectorAll("input[type='file']").forEach(input => [...input.files].forEach(CSEMedia.releaseTemporary));
     els.inspectionForm.reset();
     els.findingsList.innerHTML = "";
     state.findingCounter = 0;
     state.editingInspectionId = "";
     state.inspectionSnapshot = null;
-    state.retainedPhotos = ["", ""];
+    state.retainedPhotos = [];
     state.inspectionDirty = false;
-    [1, 2].forEach(previewInspectionPhoto);
-    renderAdditionalPhotos();
+    renderUnassignedPhotos();
     setInspectionStatus("");
 }
 
@@ -487,13 +458,13 @@ function addFindingCard(data = {}) {
     const fragment = els.findingTemplate.content.cloneNode(true);
     const card = fragment.querySelector("[data-finding]");
     card.dataset.id = data.id || uid("finding");
-    card.findingData = JSON.parse(JSON.stringify(data));
+    card.findingData = structuredClone(data);
     els.findingsList.appendChild(card);
     fillFindingCard(card, data);
     bindFindingCard(card);
     renumberFindings();
     syncGenerationState();
-    renderLegacyPhotos(card);
+    bindFindingMetadata(card);
 }
 
 function bindFindingCard(card) {
@@ -519,7 +490,9 @@ function handleFindingAction(card, action) {
             alert("Il sopralluogo deve contenere almeno un rilievo.");
             return;
         }
+        const photos = card.findingData.photos || [];
         card.remove();
+        photos.forEach(releaseUnusedFindingPhoto);
     }
 
     if (action === "duplicate") {
@@ -560,56 +533,8 @@ function fillFindingCard(card, data) {
 function renumberFindings() {
     [...els.findingsList.children].forEach((card, index) => {
         card.querySelector("[data-finding-title]").textContent = `Rilievo ${String(index + 1).padStart(2, "0")}`;
-        card.querySelector(".finding-head").hidden = els.findingsList.children.length === 1;
+        card.querySelector(".finding-head").hidden = false;
     });
-}
-
-function previewInspectionPhoto(slot) {
-    const input = document.getElementById(`inspection-photo-${slot}`);
-    const preview = document.getElementById(`inspection-photo-preview-${slot}`);
-    const container = document.querySelector(`[data-photo-slot='${slot}']`);
-    let file = input.files[0];
-    if (file && !file.type.startsWith("image/")) {
-        input.value = "";
-        file = null;
-        setInspectionStatus("Seleziona un file immagine per la foto.", true);
-    }
-    const image = file || state.retainedPhotos[slot - 1];
-    if (preview.mediaValue !== image) CSEMedia.releaseTemporary(preview.mediaValue);
-    preview.hidden = !image;
-    preview.removeAttribute("src");
-    preview.dataset.mediaPending = "";
-    preview.mediaValue = image || "";
-    if (image) CSEMedia.bindImages(container);
-    container.querySelector("[data-photo-placeholder]").hidden = !!image;
-    container.querySelector("[data-remove-photo]").hidden = !image;
-    document.getElementById(`inspection-photo-name-${slot}`).textContent = file?.name || (image ? "Foto salvata" : "");
-}
-
-function renderAdditionalPhotos() {
-    const gallery = document.getElementById("inspection-additional-photos");
-    gallery.innerHTML = state.retainedPhotos.slice(2).map((src, index) => src ? `<div class="legacy-photo"><img data-media-pending data-photo-index="${index + 2}" alt="Foto ${index + 3}"><button type="button" class="btn-secondary" data-remove-extra-photo="${index + 2}">Rimuovi foto ${index + 3}</button></div>` : "").join("");
-    gallery.querySelectorAll("img").forEach(image => image.mediaValue = state.retainedPhotos[Number(image.dataset.photoIndex)]);
-    CSEMedia.bindImages(gallery);
-    gallery.querySelectorAll("[data-remove-extra-photo]").forEach(button => button.addEventListener("click", () => {
-        CSEMedia.releaseTemporary(state.retainedPhotos[Number(button.dataset.removeExtraPhoto)]);
-        state.retainedPhotos.splice(Number(button.dataset.removeExtraPhoto), 1);
-        state.inspectionDirty = true;
-        renderAdditionalPhotos();
-    }));
-}
-
-function renderLegacyPhotos(card) {
-    const gallery = card.querySelector("[data-legacy-photos]");
-    const photos = card.findingData.photos || [];
-    gallery.hidden = !photos.some(Boolean);
-    gallery.innerHTML = photos.map((src, index) => src ? `<div class="legacy-photo"><img data-media-source="${escapeHtml(src)}" alt="Foto ${index + 1} del rilievo"><button type="button" class="btn-secondary" data-remove-legacy-photo="${index}">Rimuovi foto ${index + 1}</button></div>` : "").join("");
-    CSEMedia.bindImages(gallery);
-    gallery.querySelectorAll("[data-remove-legacy-photo]").forEach(button => button.addEventListener("click", () => {
-        card.findingData.photos.splice(Number(button.dataset.removeLegacyPhoto), 1);
-        state.inspectionDirty = true;
-        renderLegacyPhotos(card);
-    }));
 }
 
 function resizeTextarea(field) {
@@ -719,23 +644,11 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
         for (let i = 0; i < cards.length; i += 1) {
             const finding = readFindingCard(cards[i]);
             finding.number = i + 1;
-            finding.company ||= value("inspection-esecutrice");
+            finding.photos = await Promise.all(finding.photos.map(photo => photo instanceof Blob ? compressFile(photo, 1600, 0.82) : photo));
             findings.push(finding);
         }
 
-        const photos = [];
-        for (const slot of [1, 2]) {
-            const inputId = `inspection-photo-${slot}`;
-            const image = await readSingleImage(inputId, 1400, 0.82);
-            if (document.getElementById(inputId).files.length && !image) {
-                throw new Error(`La foto ${slot} non è leggibile. Scegli un'immagine JPG o PNG.`);
-            }
-            const retained = state.retainedPhotos[slot - 1];
-            photos.push(image || (retained instanceof Blob ? await compressFile(retained, 1600, 0.82) : retained) || "");
-        }
-        for (const retained of state.retainedPhotos.slice(2)) {
-            photos.push(retained instanceof Blob ? await compressFile(retained, 1600, 0.82) : retained);
-        }
+        const photos = [...state.retainedPhotos];
 
         const existing = state.inspections.find(item => item.id === state.editingInspectionId);
         const now = new Date().toISOString();
@@ -748,6 +661,7 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
             siteSnapshot: snapshotSite(site),
             status: existing?.status || "ATTIVO",
             completionStatus,
+            findingSchemaVersion: 2,
             createdAt: existing?.createdAt || now,
             updatedAt: now,
             legacyFindingLayout: existing ? (existing.legacyFindingLayout ?? !Array.isArray(existing.photos)) : false,
@@ -756,11 +670,9 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
                 affidataria: value("inspection-affidataria"),
                 referenteAffidataria: value("inspection-referente"),
                 respLavori: site.responsibleForWorks || "",
-                esecutrice: value("inspection-esecutrice"),
                 tecnico: value("inspection-technician"),
-                fabbricato: value("inspection-building"),
-                piano: value("inspection-floor"),
-                sospensioneLavori: document.querySelector("input[name='inspection-suspended']:checked")?.value || "NO"
+                esecutrice: [...new Set(findings.map(f => f.executingCompany).filter(Boolean))].join(", "),
+                sospensioneLavori: findings.some(f => f.activitySuspended === "SI") ? "SI" : "NO"
             },
             notes: value("inspection-notes"),
             findings,
@@ -768,6 +680,7 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
         };
 
         const saved = await CSEStorage.saveInspection(inspection);
+        state.numberCounters[saved.siteId] = Math.max(state.numberCounters[saved.siteId] || 0, Number(saved.reportNumber) || 0);
         state.inspections = existing
             ? state.inspections.map(item => item.id === existing.id ? saved : item)
             : [saved, ...state.inspections];
@@ -811,6 +724,10 @@ function readFindingCard(card) {
         finding[field.dataset.field] = field.value.trim();
     });
 
+    finding.activitySuspended = card.querySelector("[data-suspended]:checked")?.value || "NO";
+    delete finding.pdfDescription;
+    delete finding.pdfPhotoGroups;
+    delete finding.showPhotoFrame;
     return finding;
 }
 
@@ -819,7 +736,7 @@ function snapshotSite(site) {
 }
 
 function nextReportNumber(siteId) {
-    return Math.max(0, ...state.inspections.filter(report => report.siteId === siteId).map(report => Number(report.reportNumber) || 0)) + 1;
+    return Math.max(state.numberCounters[siteId] || 0, ...state.inspections.filter(report => report.siteId === siteId).map(report => Number(report.reportNumber) || 0)) + 1;
 }
 
 function renderArchive() {
@@ -833,6 +750,7 @@ function renderArchive() {
     if (siteId !== "ALL") {
         reports = reports.filter(report => report.siteId === siteId);
     }
+    reports.sort((a, b) => String(b.date || "").localeCompare(String(a.date || "")) || Number(b.reportNumber) - Number(a.reportNumber));
 
     if (!reports.length) {
         els.archiveList.innerHTML = `<div class="empty-state">Nessun verbale da mostrare per il filtro selezionato.</div>`;
@@ -840,15 +758,15 @@ function renderArchive() {
     }
 
     const groups = reports.reduce((acc, report) => {
-        const name = report.siteSnapshot?.name || "Cantiere";
-        acc[name] ||= [];
-        acc[name].push(report);
+        const key = report.siteId;
+        acc[key] ||= [];
+        acc[key].push(report);
         return acc;
     }, {});
 
-    els.archiveList.innerHTML = Object.entries(groups).map(([siteName, siteReports]) => `
+    els.archiveList.innerHTML = Object.entries(groups).map(([siteId, siteReports]) => `
         <section class="archive-group">
-            <h3>${escapeHtml(siteName)}</h3>
+            <h3>${escapeHtml(state.sites.find(site => site.id === siteId)?.name || siteReports[0].siteSnapshot?.name || "Cantiere")}</h3>
             ${siteReports.map(reportCardHtml).join("")}
         </section>
     `).join("");
@@ -865,8 +783,8 @@ function reportCardHtml(report) {
     return `
         <article class="report-card">
             <div>
-                <h3>Report ${String(report.reportNumber).padStart(3, "0")} - ${escapeHtml(report.siteSnapshot?.name || "")}</h3>
-                <p>${date} · ${findings} rilievi</p>
+                <h3>${date} - Report ${String(report.reportNumber).padStart(3, "0")}</h3>
+                <p>${findings} ${findings === 1 ? "rilievo" : "rilievi"}</p>
                 <p>Tecnico: ${escapeHtml(report.general?.tecnico || "Non indicato")}</p>
                 <span class="report-state ${completion === "BOZZA" ? "draft" : ""}">${escapeHtml(completion)}</span>
             </div>
@@ -874,7 +792,7 @@ function reportCardHtml(report) {
                 <button class="btn-secondary" type="button" data-report-action="view" data-id="${report.id}">Apri</button>
                 <button class="btn-secondary" type="button" data-report-action="edit" data-id="${report.id}">Modifica</button>
                 <button class="btn-pdf" type="button" data-report-action="pdf" data-id="${report.id}">PDF</button>
-                <button class="btn-secondary" type="button" data-report-action="duplicate" data-id="${report.id}">Duplica</button>
+                <button class="btn-danger" type="button" data-report-action="delete" data-id="${report.id}">Elimina</button>
                 <button class="btn-secondary" type="button" data-report-action="toggle" data-id="${report.id}">${report.status === "ARCHIVIATO" ? "Ripristina" : "Archivia"}</button>
                 <button class="btn-secondary" type="button" data-report-action="share" data-id="${report.id}">Condividi</button>
             </div>
@@ -886,9 +804,23 @@ async function handleReportAction(action, id) {
     if (state.busy) return;
     const report = state.inspections.find(item => item.id === id);
     if (!report) return;
-    const writing = action === "toggle" || action === "duplicate";
+    const writing = action === "toggle" || action === "duplicate" || action === "delete";
     if (writing) setInspectionBusy(true);
     try {
+    if (action === "delete") {
+        if (!await confirmReportDeletion(report)) return;
+        try { await CSEStorage.deleteInspection(id); }
+        catch (error) { alert(`Eliminazione non riuscita. Il report è conservato: ${error.message}`); return; }
+        state.numberCounters[report.siteId] = Math.max(state.numberCounters[report.siteId] || 0, Number(report.reportNumber) || 0);
+        state.inspections = state.inspections.filter(item => item.id !== id);
+        if (state.viewedInspectionId === id) document.getElementById("report-view-panel").hidden = true;
+        if (state.editingInspectionId === id) {
+            clearInspectionForm();
+            els.inspectionPanel.hidden = true;
+        }
+        renderRecentTechnicians();
+        renderArchive();
+    }
     if (action === "view") viewInspection(report);
     if (action === "edit") openInspection(report);
     if (action === "pdf") {
@@ -932,17 +864,16 @@ function viewInspection(report) {
         ["Data", formatDate(model.date)], ["Stato", model.completionStatus],
         ["Tecnico che effettua il sopralluogo", model.general.tecnico], ["CSE del cantiere", model.siteSnapshot.cseName],
         ["Responsabile dei Lavori", model.siteSnapshot.responsibleForWorks], ["Impresa affidataria", model.general.affidataria],
-        ["Referente affidataria", model.general.referenteAffidataria], ["Impresa esecutrice", model.general.esecutrice],
-        ["Fabbricato", model.general.fabbricato], ["Piano", model.general.piano],
-        ["Attività sospese", model.general.sospensioneLavori], ["Note", model.notes || model.general.notes]
+        ["Referente affidataria", model.general.referenteAffidataria], ["Note", model.notes || model.general.notes]
     ];
     const gallery = photos => `<div class="report-photo-gallery">${photos.filter(Boolean).map((src, i) => `<img data-media-source="${escapeHtml(src)}" alt="Foto ${i + 1}">`).join("")}</div>`;
     document.getElementById("report-view-content").innerHTML = `
         <dl class="report-details">${details.map(([label, text]) => `<div><dt>${label}</dt><dd class="report-text">${escapeHtml(text || "Non indicato")}</dd></div>`).join("")}</dl>
         ${model.findings.map(finding => `<section class="view-finding"><h3>Rilievo ${finding.number}</h3>
+            <dl class="report-details">${[["Impresa esecutrice", finding.executingCompany], ["Fabbricato", finding.building], ["Piano", finding.floor], ["Attività sospesa", finding.activitySuspended]].map(([label, text]) => `<div><dt>${label}</dt><dd>${escapeHtml(text || "Non indicato")}</dd></div>`).join("")}</dl>
             ${[["Appunto", finding.observation], ["Descrizione attività", finding.activityDescription], ["Misure di sicurezza attuate", finding.safetyMeasures], ["Misure correttive", finding.correctiveMeasures], ["Impresa interessata", finding.company], ["Priorità", finding.priority], ["Disposizione operativa", finding.timing]].map(([label, text]) => `<h4>${label}</h4><p class="report-text">${escapeHtml(text || "-")}</p>`).join("")}
             ${gallery(finding.photos || [])}</section>`).join("")}
-        ${model.photos?.some(Boolean) ? `<section class="view-finding"><h3>Foto del sopralluogo</h3>${gallery(model.photos)}</section>` : ""}
+        ${model.unassignedPhotos.length ? `<section class="view-finding"><h3>Foto precedenti da assegnare</h3>${gallery(model.unassignedPhotos)}</section>` : ""}
     `;
     CSEMedia.bindImages(document.getElementById("report-view-content"));
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1126,30 +1057,51 @@ async function renderCseProPdf(report) {
     for (const finding of report.findings || []) {
         await addFindingPdfPage(pdf, finding, report, header, footer, greenBar);
     }
+    // Keep ambiguous historical attachments visible without assigning them to the wrong finding.
+    for (let i = 0; i < report.unassignedPhotos.length; i += 2) {
+        pdf.addPage();
+        header();
+        greenBar(15, 42, 180, 8);
+        pdf.setFont(undefined, "bold");
+        pdf.setFontSize(8);
+        pdf.text("Allegati precedenti - rilievo di appartenenza non indicato", 18, 47);
+        pdf.setFont(undefined, "normal");
+        await drawPhotos(pdf, report.unassignedPhotos.slice(i, i + 2), 60);
+        footer();
+    }
+    pdf.setPage(pdf.getNumberOfPages());
+    pdf.setFont(undefined, "normal");
+    pdf.setFontSize(8);
+    pdf.setTextColor(0, 0, 0);
+    fitPdfText(pdf, `Il CSE p.i.e. ${site.cseName || "-"}`, 115, 251, 70, 6, 8, "right");
 
     const fileName = `Verbale_CSE_${(site.code || site.name || "report").toUpperCase()}_${String(report.reportNumber).padStart(3, "0")}.pdf`;
     pdf.save(fileName.replace(/[^a-z0-9_.-]/gi, "_"));
 }
 
 async function addFindingPdfPage(pdf, finding, report, header, footer, greenBar) {
-    const general = report.general || {};
     const description = finding.pdfDescription;
     const sections = [
         ["Descrizione attivita:", description || "-"],
         ["Misure di sicurezza attuate:", finding.safetyMeasures || "-"],
         ["Misure correttive:", finding.correctiveMeasures || "-"]
     ];
-    let y = 58;
+    let y = 74;
 
     function startFindingPage(continuation = false) {
         pdf.addPage();
         header();
         greenBar(15, 42, 180, 8);
         pdf.setFont(undefined, "bold");
-        const title = `Rilievo ${String(finding.number).padStart(2, "0")}${continuation ? " - segue" : ""}    Fabbricato: ${general.fabbricato || "-"}    Piano: ${general.piano || "-"}`;
+        const title = `Rilievo ${String(finding.number).padStart(2, "0")}${continuation ? " - segue" : ""}`;
         fitPdfText(pdf, title, 18, 43, 174, 5, 8);
+        pdf.setFont(undefined, "normal");
+        fitPdfText(pdf, `Impresa esecutrice: ${finding.executingCompany || "-"}`, 18, 52, 174, 6, 8);
+        fitPdfText(pdf, `Fabbricato: ${finding.building || "-"}`, 18, 59, 85, 6, 8);
+        fitPdfText(pdf, `Piano: ${finding.floor || "-"}`, 106, 59, 85, 6, 8);
+        fitPdfText(pdf, `Attivita sospesa: ${finding.activitySuspended === "SI" ? "SI" : "NO"}`, 18, 65, 174, 5, 8);
         pdf.setFontSize(8);
-        y = 58;
+        y = 76;
     }
 
     function continueFindingPage() {
@@ -1209,7 +1161,7 @@ async function addFindingPdfPage(pdf, finding, report, header, footer, greenBar)
 
     const yTab = 230;
     pdf.setFontSize(8);
-    pdf.text(`sospese: ${general.sospensioneLavori === "SI" ? "[ ] NON APPLICABILE - [X] APPLICABILE" : "[X] NON APPLICABILE - [ ] APPLICABILE"}`, 15, yTab);
+    pdf.text(`sospese: ${finding.activitySuspended === "SI" ? "[ ] NON APPLICABILE - [X] APPLICABILE" : "[X] NON APPLICABILE - [ ] APPLICABILE"}`, 15, yTab);
     greenBar(15, yTab + 4, 180, 7);
     pdf.setFontSize(7);
     pdf.text("Attivita", 18, yTab + 9);
@@ -1230,7 +1182,6 @@ async function addFindingPdfPage(pdf, finding, report, header, footer, greenBar)
     pdf.text(finding.correctiveMeasures ? "Vedi prescrizioni" : "-", 155, yTab + 16, { maxWidth: 37 });
 
     pdf.setFontSize(8);
-    fitPdfText(pdf, `Il CSE p.i.e. ${report.siteSnapshot.cseName || "-"}`, 115, 251, 70, 6, 8);
     footer();
 
     for (const photos of finding.pdfPhotoGroups.slice(1)) {
@@ -1242,7 +1193,6 @@ async function addFindingPdfPage(pdf, finding, report, header, footer, greenBar)
         pdf.text(`Foto rilievo ${String(finding.number).padStart(2, "0")} - segue`, 18, 47);
         pdf.setFont(undefined, "normal");
         await drawPhotos(pdf, photos, 60);
-        fitPdfText(pdf, `Il CSE p.i.e. ${report.siteSnapshot.cseName || "-"}`, 115, 251, 70, 6, 8);
         footer();
     }
 }

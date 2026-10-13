@@ -17,7 +17,7 @@ Database IndexedDB: `CSEProArchive`, versione 1.
 | `sites` | Cantieri, ruoli e riferimenti alle immagini del cantiere |
 | `inspections` | Sopralluoghi, rilievi annidati, testi, stato, numerazione e snapshot |
 | `media` | File immagine come Blob, con ID, tipo MIME e dimensione |
-| `meta` | Stato della migrazione e manifest di verifica |
+| `meta` | Stato/manifest migrazione, valori dei selettori e contatori numerazione |
 
 La relazione rimane `inspection.siteId -> site.id`; ogni sopralluogo contiene i propri `findings[]` e lo snapshot storico. `inspection.photos[]`, `finding.photos[]` e i campi immagine del cantiere/snapshot contengono riferimenti `media:img_...`, non immagini Base64.
 
@@ -31,7 +31,7 @@ localStorage contiene soltanto la preferenza `cseProActiveSiteV1` e altre eventu
 
 Il lato lungo massimo e' 1600 pixel (alcuni campi esistenti mantengono limiti inferiori). La qualita' iniziale e' circa 0,82; per immagini molto pesanti viene ridotta in modo progressivo. Se necessario, si ridimensiona ulteriormente per puntare a circa 700 KB. Le immagini precedenti non vengono ricompresse durante la migrazione, cosi' da conservare esattamente i file originali gia' archiviati.
 
-Il modulo mantiene le prime due posizioni esistenti e aggiunge "Aggiungi fotografie", con selezione multipla e anteprime/rimozione delle ulteriori foto. Non c'e' piu' un limite funzionale di due fotografie per sopralluogo.
+Il modulo dispone di una galleria e di "Aggiungi fotografie" per ciascun rilievo, con selezione multipla e rimozione. Non c'e' un limite funzionale di due fotografie. Per le foto generali storiche prive di associazione certa vedere `RILIEVI-ARCHIVIO.md`.
 
 Le anteprime usano URL temporanei dei Blob. Gli URL dei file selezionati vengono rilasciati al salvataggio, alla rimozione o alla chiusura della pagina. Il Base64 viene prodotto temporaneamente per il PDF quando jsPDF deve leggere il Blob; non viene risalvato nell'archivio.
 
@@ -56,7 +56,7 @@ Non si usano `localStorage.clear()` o cancellazioni del database nell'app. Gli e
 
 Se lo spazio del dispositivo realmente termina, viene mostrato un messaggio esplicito; il report precedente resta intatto e appunti/foto selezionati restano nel modulo, consentendo di liberare spazio e riprovare.
 
-Il PDF continua a usare `createReportModel()` e `renderCseProPdf()`. `loadImage()` risolve i riferimenti IndexedDB in immagini temporanee. Coordinate, font, colori, intestazioni, griglia fotografica e firme del renderer sono invariati. Con piu' fotografie si usano le pagine aggiuntive gia' previste dal format, sempre due foto per griglia. Non viene archiviato il PDF completo.
+Il PDF continua a usare `createReportModel()` e `renderCseProPdf()`. `loadImage()` risolve i riferimenti IndexedDB in immagini temporanee. La fase storage da sola aveva mantenuto il layout identico. La fase successiva aggiunge i metadata per rilievo e limita la firma CSE all'ultima pagina, preservando branding e griglia fotografica: vedere `RILIEVI-ARCHIVIO.md`. Non viene archiviato il PDF completo.
 
 ## Test eseguiti
 

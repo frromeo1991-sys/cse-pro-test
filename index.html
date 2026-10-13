@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="CSE PRO - gestione cantieri, sopralluoghi, rilievi multipli e verbali PDF Romeo Safety.">
     <title>CSE PRO - Romeo Safety Italia</title>
-    <link rel="stylesheet" href="style2.css?v=20261013-idb">
+    <link rel="stylesheet" href="style2.css?v=20261013-findings">
 </head>
 <body>
     <div class="contenitore-principale">
@@ -144,25 +144,6 @@
                         <input type="text" id="inspection-referente" placeholder="Referente">
                     </label>
                 </div>
-                <label class="gruppo-form" for="inspection-esecutrice">
-                        Impresa esecutrice / sub
-                        <input type="text" id="inspection-esecutrice" placeholder="Ragione sociale esecutrice">
-                </label>
-                <div class="riga-doppia blocco-azzurro">
-                    <label class="gruppo-form" for="inspection-building">
-                        Fabbricato
-                        <input type="text" id="inspection-building" placeholder="Es. Corpo A">
-                    </label>
-                    <label class="gruppo-form" for="inspection-floor">
-                        Piano
-                        <input type="text" id="inspection-floor" placeholder="Es. Terzo piano">
-                    </label>
-                </div>
-                <fieldset class="area-radio">
-                    <legend>Attivita lavorative sospese durante il sopralluogo?</legend>
-                    <label><input type="radio" name="inspection-suspended" value="NO" checked> NO</label>
-                    <label><input type="radio" name="inspection-suspended" value="SI"> SI</label>
-                </fieldset>
 
                 <div class="findings-toolbar">
                     <div>
@@ -172,27 +153,10 @@
                 </div>
                 <div id="findings-list"></div>
 
-                <section class="inspection-photos" aria-labelledby="photos-title">
-                    <h3 id="photos-title">Foto del sopralluogo</h3>
-                    <div class="photo-slots">
-                        <div class="photo-slot" data-photo-slot="1">
-                            <div class="photo-frame"><img id="inspection-photo-preview-1" alt="Foto 1 del sopralluogo" hidden><span data-photo-placeholder>Foto 1</span></div>
-                            <label class="btn-secondary photo-picker" for="inspection-photo-1">Carica foto 1</label>
-                            <input class="visually-hidden" type="file" id="inspection-photo-1" accept="image/*">
-                            <p class="photo-name" id="inspection-photo-name-1"></p>
-                            <button type="button" class="btn-secondary" data-remove-photo="1" hidden>Rimuovi foto 1</button>
-                        </div>
-                        <div class="photo-slot" data-photo-slot="2">
-                            <div class="photo-frame"><img id="inspection-photo-preview-2" alt="Foto 2 del sopralluogo" hidden><span data-photo-placeholder>Foto 2</span></div>
-                            <label class="btn-secondary photo-picker" for="inspection-photo-2">Carica foto 2</label>
-                            <input class="visually-hidden" type="file" id="inspection-photo-2" accept="image/*">
-                            <p class="photo-name" id="inspection-photo-name-2"></p>
-                            <button type="button" class="btn-secondary" data-remove-photo="2" hidden>Rimuovi foto 2</button>
-                        </div>
-                    </div>
-                    <div id="inspection-additional-photos" class="legacy-photos"></div>
-                    <label class="btn-secondary photo-picker" for="inspection-more-photos">Aggiungi fotografie</label>
-                    <input class="visually-hidden" type="file" id="inspection-more-photos" accept="image/*" multiple>
+                <section id="unassigned-photos" class="inspection-photos" hidden>
+                    <h3>Foto precedenti da assegnare</h3>
+                    <p>Queste foto erano salvate senza un rilievo di appartenenza.</p>
+                    <div id="unassigned-photo-list" class="legacy-photos"></div>
                 </section>
 
                 <details class="finding-options">
@@ -255,6 +219,27 @@
                     <button type="button" class="btn-icon danger" data-action="delete" title="Elimina">×</button>
                 </div>
             </div>
+            <div class="finding-metadata">
+                <label class="gruppo-form">Impresa esecutrice
+                    <input type="hidden" data-field="executingCompany">
+                    <button type="button" class="btn-secondary value-picker" data-picker="executingCompany" aria-haspopup="dialog">Seleziona impresa</button>
+                </label>
+                <div class="riga-doppia">
+                    <label class="gruppo-form">Fabbricato
+                        <input type="hidden" data-field="building">
+                        <button type="button" class="btn-secondary value-picker" data-picker="building" aria-haspopup="dialog">Seleziona fabbricato</button>
+                    </label>
+                    <label class="gruppo-form">Piano
+                        <input type="hidden" data-field="floor">
+                        <button type="button" class="btn-secondary value-picker" data-picker="floor" aria-haspopup="dialog">Seleziona piano</button>
+                    </label>
+                </div>
+                <fieldset class="area-radio finding-suspension">
+                    <legend>Attività sospesa</legend>
+                    <label><input type="radio" data-suspended value="NO" checked> NO</label>
+                    <label><input type="radio" data-suspended value="SI"> SÌ</label>
+                </fieldset>
+            </div>
             <label class="gruppo-form">
                 Cosa hai trovato?
                 <textarea rows="3" data-field="observation" placeholder="Es. Operai sul ponteggio senza parapetto sul lato esterno." required></textarea>
@@ -301,15 +286,43 @@
                     </label>
                 </div>
             </details>
-            <div class="legacy-photos" data-legacy-photos hidden></div>
+            <section class="finding-photos">
+                <h4>Fotografie del rilievo</h4>
+                <div class="legacy-photos" data-finding-photos></div>
+                <label class="btn-secondary photo-picker" data-photo-picker>+ Aggiungi fotografie
+                    <input class="visually-hidden" type="file" data-photo-upload accept="image/*" multiple>
+                </label>
+            </section>
         </article>
     </template>
 
+    <dialog id="value-dialog" class="mobile-dialog" aria-labelledby="value-dialog-title">
+        <div class="dialog-heading"><h2 id="value-dialog-title"></h2><button type="button" class="btn-icon" data-close-dialog aria-label="Chiudi">×</button></div>
+        <div id="value-options" class="value-options"></div>
+        <button type="button" class="btn-secondary" id="btn-add-value">+ Aggiungi nuovo</button>
+        <form id="new-value-form" hidden>
+            <label class="gruppo-form" for="new-value">Nuovo valore<input id="new-value" type="text" maxlength="180" required></label>
+            <p id="value-error" role="alert" hidden></p>
+            <button type="submit" class="btn-primary">Aggiungi e seleziona</button>
+        </form>
+        <button type="button" class="btn-secondary" data-close-dialog>Annulla</button>
+    </dialog>
+    <dialog id="delete-dialog" class="mobile-dialog" aria-labelledby="delete-dialog-title">
+        <h2 id="delete-dialog-title">Elimina report</h2>
+        <p id="delete-dialog-message"></p>
+        <p>La cancellazione è definitiva.</p>
+        <form method="dialog" class="delete-actions">
+            <button class="btn-secondary" value="cancel" autofocus>Annulla</button>
+            <button class="btn-danger" value="delete">Elimina</button>
+        </form>
+    </dialog>
+
     <script src="jspdf.umd.min.js"></script>
     <script src="assets.js"></script>
-    <script src="storage.js?v=20261013-idb"></script>
+    <script src="storage.js?v=20261013-findings"></script>
     <script src="media.js?v=20261013-idb"></script>
-    <script src="report-model.js?v=20261013"></script>
-    <script src="script.js?v=20261013-idb"></script>
+    <script src="report-model.js?v=20261013-findings"></script>
+    <script src="finding-ui.js?v=20261013-findings"></script>
+    <script src="script.js?v=20261013-findings"></script>
 </body>
 </html>
