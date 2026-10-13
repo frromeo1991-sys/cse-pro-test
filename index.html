@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="CSE PRO - gestione cantieri, sopralluoghi, rilievi multipli e verbali PDF Romeo Safety.">
     <title>CSE PRO - Romeo Safety Italia</title>
-    <link rel="stylesheet" href="style2.css">
+    <link rel="stylesheet" href="style2.css?v=20261013">
 </head>
 <body>
     <div class="contenitore-principale">
@@ -73,6 +73,16 @@
                         <input type="text" id="site-job-code" placeholder="Codice interno">
                     </label>
                 </div>
+                <div class="riga-doppia">
+                    <label class="gruppo-form" for="site-cse">
+                        CSE del cantiere
+                        <input type="text" id="site-cse" placeholder="Nome e cognome del CSE">
+                    </label>
+                    <label class="gruppo-form" for="site-responsible">
+                        Responsabile dei Lavori
+                        <input type="text" id="site-responsible" placeholder="Nome e cognome del responsabile">
+                    </label>
+                </div>
                 <label class="gruppo-form" for="site-notes">
                     Note cantiere
                     <textarea id="site-notes" rows="3" placeholder="Dati utili per PDF, archivio o futura sincronizzazione."></textarea>
@@ -100,20 +110,25 @@
             <div class="panel-title">
                 <div>
                     <p class="eyebrow">Sopralluogo</p>
-                    <h2>Nuovo verbale</h2>
+                    <h2 id="inspection-title">Nuovo verbale</h2>
                 </div>
                 <button type="button" class="btn-secondary" id="btn-close-inspection">Chiudi</button>
             </div>
 
             <form id="inspection-form" class="form-card">
+                <div class="inspection-site-summary">
+                    <dl id="inspection-site-roles" class="site-roles"></dl>
+                    <button type="button" class="btn-secondary" id="btn-refresh-site-data" hidden>Aggiorna dati cantiere</button>
+                </div>
                 <div class="riga-doppia">
                     <label class="gruppo-form" for="inspection-date">
                         Data sopralluogo
                         <input type="date" id="inspection-date" required>
                     </label>
                     <label class="gruppo-form" for="inspection-technician">
-                        Tecnico / CSE
-                        <input type="text" id="inspection-technician" placeholder="Nome coordinatore" required>
+                        Tecnico che effettua il sopralluogo
+                        <input type="text" id="inspection-technician" placeholder="Nome e cognome del tecnico" list="recent-technicians" required>
+                        <datalist id="recent-technicians"></datalist>
                     </label>
                 </div>
                 <div class="riga-doppia">
@@ -126,16 +141,10 @@
                         <input type="text" id="inspection-referente" placeholder="Referente">
                     </label>
                 </div>
-                <div class="riga-doppia">
-                    <label class="gruppo-form" for="inspection-responsabile">
-                        p.c. responsabile dei lavori
-                        <input type="text" id="inspection-responsabile" placeholder="Nome responsabile">
-                    </label>
-                    <label class="gruppo-form" for="inspection-esecutrice">
+                <label class="gruppo-form" for="inspection-esecutrice">
                         Impresa esecutrice / sub
                         <input type="text" id="inspection-esecutrice" placeholder="Ragione sociale esecutrice">
-                    </label>
-                </div>
+                </label>
                 <div class="riga-doppia blocco-azzurro">
                     <label class="gruppo-form" for="inspection-building">
                         Fabbricato
@@ -180,13 +189,33 @@
                     </div>
                 </section>
 
+                <details class="finding-options">
+                    <summary>Note del sopralluogo</summary>
+                    <label class="gruppo-form" for="inspection-notes">
+                        Note
+                        <textarea id="inspection-notes" rows="3"></textarea>
+                    </label>
+                </details>
                 <p id="inspection-status" class="status-message" role="status" aria-live="polite" hidden></p>
                 <div class="form-actions sticky-actions">
                     <button type="button" class="btn-secondary" id="btn-reset-inspection">Pulisci</button>
+                    <button type="button" class="btn-secondary" id="btn-save-draft">Salva bozza</button>
                     <button type="button" class="btn-primary" id="btn-generate-inspection">Genera con AI</button>
                     <button type="submit" class="btn-primary" id="btn-save-inspection" hidden>Salva verbale</button>
                 </div>
             </form>
+        </section>
+
+        <section id="report-view-panel" class="panel" hidden aria-labelledby="report-view-title">
+            <div class="panel-title">
+                <h2 id="report-view-title">Sopralluogo</h2>
+                <div class="card-actions">
+                    <button type="button" class="btn-secondary" id="btn-edit-viewed-report">Modifica</button>
+                    <button type="button" class="btn-pdf" id="btn-pdf-viewed-report">PDF</button>
+                    <button type="button" class="btn-secondary" id="btn-close-report-view">Chiudi</button>
+                </div>
+            </div>
+            <div id="report-view-content"></div>
         </section>
 
         <section id="archive-panel" class="panel">
@@ -199,6 +228,8 @@
                     <select id="archive-site-filter" aria-label="Filtra per cantiere"></select>
                     <select id="archive-status-filter" aria-label="Filtra per stato">
                         <option value="ATTIVO">Solo attivi</option>
+                        <option value="BOZZA">Bozze</option>
+                        <option value="COMPLETATO">Completati</option>
                         <option value="ARCHIVIATO">Archiviati</option>
                     </select>
                 </div>
@@ -236,9 +267,11 @@
                     <textarea rows="3" data-field="correctiveMeasures"></textarea>
                 </label>
             </div>
+            <p class="finding-stale" data-ai-stale hidden>Appunto modificato: rigenera le tre sezioni oppure aggiorna i testi prima di completare.</p>
             <details class="finding-options">
                 <summary>Disposizione operativa</summary>
                 <label class="gruppo-form">
+                    Tempistica
                     <select data-field="timing">
                         <option value="Messa in sicurezza immediata">Messa in sicurezza immediata</option>
                         <option value="Attivita sospesa fino ad adempimento">Attivita sospesa fino ad adempimento</option>
@@ -247,12 +280,28 @@
                         <option value="Messa in sicurezza giornata">Messa in sicurezza giornata</option>
                     </select>
                 </label>
+                <div class="riga-doppia">
+                    <label class="gruppo-form">
+                        Impresa interessata
+                        <input type="text" data-field="company">
+                    </label>
+                    <label class="gruppo-form">
+                        Priorità
+                        <select data-field="priority">
+                            <option value="Ordinaria">Ordinaria</option>
+                            <option value="Alta">Alta</option>
+                            <option value="Urgente">Urgente</option>
+                        </select>
+                    </label>
+                </div>
             </details>
+            <div class="legacy-photos" data-legacy-photos hidden></div>
         </article>
     </template>
 
     <script src="jspdf.umd.min.js"></script>
     <script src="assets.js"></script>
-    <script src="script.js"></script>
+    <script src="report-model.js?v=20261013"></script>
+    <script src="script.js?v=20261013"></script>
 </body>
 </html>
