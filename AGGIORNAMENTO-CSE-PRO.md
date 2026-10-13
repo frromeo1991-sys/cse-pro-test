@@ -2,21 +2,21 @@
 
 ## Analisi del progetto
 
-L'app esistente usa HTML, CSS e JavaScript senza framework. I dati sono conservati nel browser:
+L'app usa HTML, CSS e JavaScript senza framework. La persistenza principale e' ora in IndexedDB. Per la correzione della quota e la migrazione, vedere anche `ARCHIVIO-INDEXEDDB.md`.
 
 | Dato | Chiave / struttura |
 | --- | --- |
-| Cantieri | `cseProSitesV1`, array di cantieri |
-| Sopralluoghi | `cseProInspectionsV1`, array di report |
+| Cantieri | IndexedDB `CSEProArchive`, store `sites` |
+| Sopralluoghi | IndexedDB `CSEProArchive`, store `inspections` |
 | Cantiere selezionato | `cseProActiveSiteV1` |
-| Archivio della prima versione | `databaseCantieri`, conservato dopo l'importazione |
+| Vecchi archivi localStorage | Migrati e rimossi solo dopo verifica della copia in IndexedDB |
 | Tecnico | `inspection.general.tecnico` |
 | Rilievi e testi AI | `inspection.findings[]` |
-| Due foto del sopralluogo | `inspection.photos[]`, immagini compresse in base64 |
+| Foto del sopralluogo | `inspection.photos[]`, riferimenti ai Blob nello store `media` |
 | Foto delle versioni precedenti | `finding.photos[]`, conservate e modificabili |
 | Dati storici del cantiere | `inspection.siteSnapshot` |
 
-Non viene usato IndexedDB. Il PDF viene generato con la libreria jsPDF locale e scaricato; non era e non e' un record archiviato nel database dell'app. I PDF gia' scaricati non vengono modificati o eliminati.
+Il PDF viene generato con la libreria jsPDF locale e scaricato; non era e non e' un record archiviato nel database dell'app. I PDF gia' scaricati non vengono modificati o eliminati.
 
 Problemi individuati: tecnico usato impropriamente anche come CSE nella firma; Responsabile dei Lavori richiesto ogni volta; assenza di riapertura e modifica; numerazione basata sul numero di record anziche' sul massimo numero assegnato. In fase di modifica era inoltre necessario evitare di rigenerare testi gia' corretti e perdere foto o campi meno recenti.
 
@@ -28,13 +28,14 @@ Restano intenzionalmente fissi il branding Romeo Safety, i recapiti societari ne
 - `script.js`: gestione delle modifiche, foto salvate, snapshot, compatibilita', numerazione e correzione delle due posizioni PDF richieste.
 - `style2.css`: stili aggiuntivi per ruoli, visualizzazione, stato e foto storiche. Branding e grafica generale conservati.
 - `report-model.js`: nuovo adattatore puro dai dati salvati al modello del report.
+- `storage.js` e `media.js`: persistenza IndexedDB, migrazione verificata, Blob e preparazione delle immagini.
 - Questo documento: struttura, compatibilita', verifiche e istruzioni.
 
 La libreria jsPDF, il pacchetto immagini e la richiesta al servizio AI non sono stati sostituiti. Quando si aggiungono rilievi, vengono generati soltanto quelli nuovi o con appunto modificato; i testi gia' pronti restano intatti. Il comando "Rigenera con AI", se tutti i rilievi sono gia' pronti, rigenera intenzionalmente tutti i testi.
 
 ## Dati e compatibilita'
 
-Le chiavi di localStorage rimangono le stesse. Nessuna funzione dell'app cancella localStorage o IndexedDB.
+I tre archivi `cseProSitesV1`, `cseProInspectionsV1` e `databaseCantieri` vengono trasferiti automaticamente in IndexedDB. Solo dopo una verifica di record e fotografie si rimuovono quelle specifiche chiavi. Preferenze e cantiere attivo rimangono in localStorage. Non viene mai eseguita una cancellazione generale dei dati del browser.
 
 Ai cantieri si aggiungono `cseName` e `responsibleForWorks`. Se il responsabile manca nella struttura del cantiere, viene recuperato dall'ultimo sopralluogo salvato che contiene `general.respLavori`. I diversi nominativi dei vecchi report restano nei rispettivi snapshot/dati originali.
 
@@ -64,7 +65,7 @@ Durante la modifica il cantiere del report e' bloccato, per evitare spostamenti 
 
 L'archivio offre Apri, Modifica, PDF, Duplica, Archivia/Ripristina e Condividi. Il PDF viene rigenerato dai dati salvati aggiornati; modifiche ancora nel modulo devono essere salvate prima di esportare dall'archivio.
 
-Le due foto del sopralluogo possono essere mantenute, sostituite o rimosse in modifica. Le vecchie foto associate ai singoli rilievi restano visibili in una galleria dedicata, dalla quale si possono eliminare singolarmente. Se un report storico contiene piu' foto delle due posizioni del format, il PDF usa ulteriori pagine con la stessa griglia fotografica, anziche' omettere gli allegati.
+Le foto del sopralluogo possono essere mantenute, sostituite, aggiunte o rimosse in modifica. Il pulsante "Aggiungi fotografie" permette di scegliere piu' immagini. Le vecchie foto associate ai singoli rilievi restano visibili in una galleria dedicata. Quando ci sono piu' foto delle due posizioni del format, il PDF usa ulteriori pagine con la stessa griglia fotografica, anziche' omettere gli allegati.
 
 In caso di spazio insufficiente, il salvataggio non sostituisce il record originale e lascia i dati nel modulo per consentire un nuovo tentativo.
 
@@ -99,4 +100,4 @@ Le risposte AI nei test di questo aggiornamento sono simulate. Endpoint e conten
 5. Premere PDF nell'archivio per ottenere il documento aggiornato.
 6. Per aggiornare intenzionalmente un vecchio report con il CSE appena configurato, aprire Modifica -> Aggiorna dati cantiere -> Salva modifiche.
 
-Per la versione online, estrarre il nuovo ZIP e sostituire i file nella stessa cartella `test-cse` del repository GitHub, includendo `report-model.js`. Caricare i file estratti, non lo ZIP. Mantenere lo stesso indirizzo web e non cancellare i dati del browser: l'archivio del telefono continua a usare lo stesso localStorage. Gli archivi di PC e telefono restano separati; non e' stata aggiunta sincronizzazione cloud.
+Per la versione online, estrarre il nuovo ZIP e sostituire i file nella stessa cartella `test-cse` del repository GitHub, includendo `report-model.js`, `storage.js` e `media.js`. Caricare i file estratti, non lo ZIP. Mantenere lo stesso indirizzo web e non cancellare i dati del browser: al primo avvio l'archivio del telefono viene migrato in IndexedDB. Gli archivi di PC e telefono restano separati; non e' stata aggiunta sincronizzazione cloud.

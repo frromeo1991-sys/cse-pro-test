@@ -1,8 +1,5 @@
 const STORAGE = {
-    sites: "cseProSitesV1",
-    inspections: "cseProInspectionsV1",
-    activeSite: "cseProActiveSiteV1",
-    legacy: "databaseCantieri"
+    activeSite: "cseProActiveSiteV1"
 };
 
 const ATTIVITA_BASE = [
@@ -19,12 +16,12 @@ const state = {
     activeSiteId: "",
     findingCounter: 0,
     busy: false,
-    photoUrls: ["", ""],
     retainedPhotos: ["", ""],
     editingInspectionId: "",
     inspectionSnapshot: null,
     inspectionDirty: false,
-    viewedInspectionId: ""
+    viewedInspectionId: "",
+    storageReady: false
 };
 
 const els = {
@@ -56,27 +53,39 @@ const els = {
     archiveList: document.getElementById("archive-list")
 };
 
-bootstrap();
+window.cseReady = bootstrap();
 
-function bootstrap() {
-    state.sites = loadJson(STORAGE.sites, []);
-    state.inspections = loadJson(STORAGE.inspections, []);
-    state.activeSiteId = localStorage.getItem(STORAGE.activeSite) || "";
-
+async function bootstrap() {
+    bindEvents();
+    document.querySelectorAll("button, input, textarea, select").forEach(element => element.disabled = true);
+    const status = document.getElementById("storage-status");
     try {
-        migrateLegacyReports();
-        upgradeSiteDefaults();
+        await CSEStorage.open();
+        await CSEStorage.migrateLocalStorage();
+        const stored = await CSEStorage.loadAll();
+        state.sites = stored.sites;
+        state.inspections = stored.inspections;
+        try { state.activeSiteId = localStorage.getItem(STORAGE.activeSite) || ""; } catch { /* A preference must not block the archive. */ }
+        await upgradeSiteDefaults();
         ensureDefaultSite();
+        state.storageReady = true;
+        document.querySelectorAll("button, input, textarea, select").forEach(element => element.disabled = false);
+        status.hidden = true;
+        setToday();
+        renderAll();
     } catch (error) {
         console.error(error);
-        alert("Aggiornamento dei dati non salvato. I dati originali restano nell'archivio del browser; verifica lo spazio disponibile prima di salvare nuove modifiche.");
+        status.hidden = false;
+        status.dataset.kind = "error";
+        status.textContent = `Impossibile aprire l'archivio: ${error.message}. Riprova senza cancellare i dati del browser.`;
+        const retry = document.getElementById("btn-retry-storage");
+        retry.hidden = false;
+        retry.disabled = false;
     }
-    bindEvents();
-    setToday();
-    renderAll();
 }
 
 function bindEvents() {
+    document.getElementById("btn-retry-storage").addEventListener("click", () => location.reload());
     els.btnManageSites.addEventListener("click", () => {
         els.sitesPanel.hidden = !els.sitesPanel.hidden;
     });
@@ -109,11 +118,28 @@ function bindEvents() {
     [1, 2].forEach(slot => {
         document.getElementById(`inspection-photo-${slot}`).addEventListener("change", () => previewInspectionPhoto(slot));
         document.querySelector(`[data-remove-photo='${slot}']`).addEventListener("click", () => {
+            CSEMedia.releaseTemporary(document.getElementById(`inspection-photo-${slot}`).files[0]);
+            CSEMedia.releaseTemporary(state.retainedPhotos[slot - 1]);
             document.getElementById(`inspection-photo-${slot}`).value = "";
             state.retainedPhotos[slot - 1] = "";
             state.inspectionDirty = true;
             previewInspectionPhoto(slot);
         });
+    });
+    document.getElementById("inspection-more-photos").addEventListener("change", event => {
+        for (const file of event.target.files) {
+            if (!file.type.startsWith("image/")) {
+                setInspectionStatus("Seleziona soltanto file immagine.", true);
+                continue;
+            }
+            let slot = [0, 1].find(index => !state.retainedPhotos[index] && !document.getElementById(`inspection-photo-${index + 1}`).files.length);
+            if (slot === undefined) slot = Math.max(2, state.retainedPhotos.length);
+            state.retainedPhotos[slot] = file;
+        }
+        event.target.value = "";
+        [1, 2].forEach(previewInspectionPhoto);
+        renderAdditionalPhotos();
+        state.inspectionDirty = true;
     });
     window.addEventListener("resize", () => {
         els.findingsList.querySelectorAll("textarea").forEach(resizeTextarea);
@@ -123,16 +149,9 @@ function bindEvents() {
     els.archiveStatusFilter.addEventListener("change", renderArchive);
 }
 
-function loadJson(key, fallback) {
-    try {
-        return JSON.parse(localStorage.getItem(key) || JSON.stringify(fallback));
-    } catch {
-        return fallback;
-    }
-}
-
-function saveJson(key, value) {
-    localStorage.setItem(key, JSON.stringify(value));
+function saveActivePreference() {
+    try { localStorage.setItem(STORAGE.activeSite, state.activeSiteId || ""); }
+    catch { /* IndexedDB remains usable even if UI preferences cannot be written. */ }
 }
 
 function uid(prefix) {
@@ -147,88 +166,6 @@ function setToday() {
     }
 }
 
-function migrateLegacyReports() {
-    if (state.inspections.length) return;
-
-    const legacy = loadJson(STORAGE.legacy, []);
-    if (!legacy.length) return;
-
-    const siteMap = new Map(state.sites.map(site => [site.name.trim().toLowerCase(), site]));
-
-    legacy.forEach((report, index) => {
-        const siteName = report.nome || "Cantiere importato";
-        const normalized = siteName.trim().toLowerCase();
-
-        if (!siteMap.has(normalized)) {
-            const site = {
-                id: uid("site"),
-                name: siteName,
-                code: siteName,
-                client: "",
-                address: "",
-                contractor: report.affidataria || "",
-                jobCode: "",
-                notes: "Creato automaticamente da archivio legacy.",
-                coverImage: "",
-                clientLogo: "",
-                createdAt: new Date().toISOString(),
-                updatedAt: new Date().toISOString()
-            };
-            siteMap.set(normalized, site);
-            state.sites.push(site);
-        }
-
-        const site = siteMap.get(normalized);
-        const siteSnapshot = snapshotSite(site);
-
-        state.inspections.push({
-            id: uid("insp"),
-            siteId: site.id,
-            date: parseLegacyDate(report.data),
-            reportNumber: nextReportNumber(site.id),
-            siteSnapshot,
-            status: report.stato || "ATTIVO",
-            createdAt: new Date().toISOString(),
-            general: {
-                affidataria: report.affidataria || "",
-                referenteAffidataria: report.referenteAffidataria || "",
-                respLavori: report.respLavori || "",
-                esecutrice: report.esecutrice || "",
-                tecnico: report.tecnico || "",
-                fabbricato: report.fabbricato || "",
-                piano: report.piano || "",
-                sospensioneLavori: report.sospensioneLavori || "NO"
-            },
-            findings: [{
-                id: uid("finding"),
-                number: 1,
-                activityDescription: (report.attivita || []).join("; "),
-                observation: report.iaDescrizione || "",
-                safetyMeasures: report.iaMisure || "",
-                correctiveMeasures: report.iaCorrettive || "",
-                company: report.esecutrice || "",
-                priority: "Ordinaria",
-                timing: report.tempistica_sicurezza || "Messa in sicurezza immediata",
-                photos: [report.foto1, report.foto2].filter(Boolean)
-            }],
-            legacyIndex: index
-        });
-    });
-
-    if (!state.activeSiteId && state.sites[0]) {
-        state.activeSiteId = state.sites[0].id;
-    }
-
-    persistCore();
-}
-
-function parseLegacyDate(date) {
-    if (!date) return new Date().toISOString().slice(0, 10);
-    const parts = String(date).split("/");
-    if (parts.length !== 3) return new Date().toISOString().slice(0, 10);
-    return `${parts[2]}-${parts[1].padStart(2, "0")}-${parts[0].padStart(2, "0")}`;
-}
-
 function ensureDefaultSite() {
     if (state.sites.length) {
         if (!state.sites.some(site => site.id === state.activeSiteId)) {
@@ -237,10 +174,10 @@ function ensureDefaultSite() {
     } else {
         state.activeSiteId = "";
     }
-    localStorage.setItem(STORAGE.activeSite, state.activeSiteId || "");
+    saveActivePreference();
 }
 
-function upgradeSiteDefaults() {
+async function upgradeSiteDefaults() {
     const previous = JSON.stringify(state.sites);
     state.sites = state.sites.map(site => {
         const latest = [...state.inspections]
@@ -252,13 +189,9 @@ function upgradeSiteDefaults() {
             responsibleForWorks: site.responsibleForWorks ?? site.responsabileLavori ?? latest?.general.respLavori ?? ""
         };
     });
-    if (JSON.stringify(state.sites) !== previous) saveJson(STORAGE.sites, state.sites);
-}
-
-function persistCore() {
-    saveJson(STORAGE.sites, state.sites);
-    saveJson(STORAGE.inspections, state.inspections);
-    localStorage.setItem(STORAGE.activeSite, state.activeSiteId || "");
+    if (JSON.stringify(state.sites) !== previous) {
+        state.sites = (await CSEStorage.saveBatch({ sites: state.sites })).sites;
+    }
 }
 
 function renderAll() {
@@ -319,7 +252,7 @@ function renderSites() {
         const active = site.id === state.activeSiteId ? " · ATTIVO" : "";
         return `
             <article class="site-card">
-                ${site.coverImage ? `<img class="site-thumb" src="${site.coverImage}" alt="">` : `<div class="site-thumb placeholder">Foto cantiere</div>`}
+                ${site.coverImage ? `<img class="site-thumb" data-media-source="${escapeHtml(site.coverImage)}" alt="Foto cantiere">` : `<div class="site-thumb placeholder">Foto cantiere</div>`}
                 <div>
                     <h3>${escapeHtml(site.name)}${active}</h3>
                     <p>${escapeHtml([site.code, site.client, site.address].filter(Boolean).join(" · ") || "Dati cantiere incompleti")}</p>
@@ -333,6 +266,7 @@ function renderSites() {
             </article>
         `;
     }).join("");
+    CSEMedia.bindImages(els.sitesList);
 
     els.sitesList.querySelectorAll("[data-site-action]").forEach(button => {
         button.addEventListener("click", () => handleSiteAction(button.dataset.siteAction, button.dataset.id));
@@ -357,12 +291,13 @@ function setActiveSite(id) {
     if (!els.inspectionPanel.hidden && value("inspection-affidataria") === previousContractor) {
         setValue("inspection-affidataria", activeSite()?.contractor || "");
     }
-    persistCore();
+    saveActivePreference();
     renderAll();
     if (!els.inspectionPanel.hidden) renderInspectionSite();
 }
 
 function openSiteForm(site) {
+    if (state.busy) return;
     els.siteForm.hidden = false;
     els.siteId.value = site?.id || "";
     setValue("site-name", site?.name || "");
@@ -388,6 +323,7 @@ function closeSiteForm() {
 async function saveSite(event) {
     event.preventDefault();
     if (state.busy) return;
+    setInspectionBusy(true);
     try {
     const existing = state.sites.find(site => site.id === els.siteId.value);
     const coverImage = await readSingleImage("site-cover", 1200, 0.78);
@@ -411,29 +347,33 @@ async function saveSite(event) {
         updatedAt: new Date().toISOString()
     };
 
-    const sites = existing ? state.sites.map(item => item.id === existing.id ? site : item) : [site, ...state.sites];
-    saveJson(STORAGE.sites, sites);
-    state.sites = sites;
+    const saved = await CSEStorage.saveSite(site);
+    state.sites = existing ? state.sites.map(item => item.id === existing.id ? saved : item) : [saved, ...state.sites];
     if (!existing) state.activeSiteId = site.id;
-    localStorage.setItem(STORAGE.activeSite, state.activeSiteId);
+    saveActivePreference();
     closeSiteForm();
     renderAll();
     if (!els.inspectionPanel.hidden && !state.editingInspectionId) renderInspectionSite();
     } catch (error) {
         alert(error.name === "QuotaExceededError" ? "Spazio di archiviazione esaurito. Il cantiere non è stato salvato." : `Salvataggio cantiere non riuscito: ${error.message}`);
-    }
+    } finally { setInspectionBusy(false); }
 }
 
-function deleteSite(id) {
+async function deleteSite(id) {
+    if (state.busy) return;
     const used = state.inspections.some(report => report.siteId === id);
     if (used) {
         alert("Questo cantiere ha report salvati. Archivia o mantieni il cantiere per preservare lo storico.");
         return;
     }
 
+    setInspectionBusy(true);
+    try { await CSEStorage.deleteSite(id); }
+    catch (error) { alert(`Eliminazione non riuscita: ${error.message}`); return; }
+    finally { setInspectionBusy(false); }
     state.sites = state.sites.filter(site => site.id !== id);
     if (state.activeSiteId === id) state.activeSiteId = state.sites[0]?.id || "";
-    persistCore();
+    saveActivePreference();
     renderAll();
 }
 
@@ -453,7 +393,7 @@ function openInspection(report = null, skipConfirm = false) {
     state.inspectionSnapshot = report ? createReportModel(report).siteSnapshot : null;
     if (report && state.sites.some(site => site.id === report.siteId)) {
         state.activeSiteId = report.siteId;
-        localStorage.setItem(STORAGE.activeSite, report.siteId);
+        saveActivePreference();
         renderAll();
     }
     els.inspectionPanel.hidden = false;
@@ -477,6 +417,7 @@ function openInspection(report = null, skipConfirm = false) {
     findings.forEach(addFindingCard);
     state.retainedPhotos = [...(report?.photos || ["", ""])];
     [1, 2].forEach(previewInspectionPhoto);
+    renderAdditionalPhotos();
     setToday();
     renderInspectionSite();
     renderRecentTechnicians();
@@ -486,6 +427,8 @@ function openInspection(report = null, skipConfirm = false) {
 }
 
 function clearInspectionForm() {
+    state.retainedPhotos.forEach(CSEMedia.releaseTemporary);
+    els.inspectionForm.querySelectorAll("input[type='file']").forEach(input => [...input.files].forEach(CSEMedia.releaseTemporary));
     els.inspectionForm.reset();
     els.findingsList.innerHTML = "";
     state.findingCounter = 0;
@@ -494,6 +437,7 @@ function clearInspectionForm() {
     state.retainedPhotos = ["", ""];
     state.inspectionDirty = false;
     [1, 2].forEach(previewInspectionPhoto);
+    renderAdditionalPhotos();
     setInspectionStatus("");
 }
 
@@ -630,22 +574,37 @@ function previewInspectionPhoto(slot) {
         file = null;
         setInspectionStatus("Seleziona un file immagine per la foto.", true);
     }
-    if (state.photoUrls[slot - 1]) URL.revokeObjectURL(state.photoUrls[slot - 1]);
-    state.photoUrls[slot - 1] = file ? URL.createObjectURL(file) : "";
-    const image = state.photoUrls[slot - 1] || state.retainedPhotos[slot - 1];
+    const image = file || state.retainedPhotos[slot - 1];
+    if (preview.mediaValue !== image) CSEMedia.releaseTemporary(preview.mediaValue);
     preview.hidden = !image;
-    if (image) preview.src = image;
-    else preview.removeAttribute("src");
+    preview.removeAttribute("src");
+    preview.dataset.mediaPending = "";
+    preview.mediaValue = image || "";
+    if (image) CSEMedia.bindImages(container);
     container.querySelector("[data-photo-placeholder]").hidden = !!image;
     container.querySelector("[data-remove-photo]").hidden = !image;
     document.getElementById(`inspection-photo-name-${slot}`).textContent = file?.name || (image ? "Foto salvata" : "");
+}
+
+function renderAdditionalPhotos() {
+    const gallery = document.getElementById("inspection-additional-photos");
+    gallery.innerHTML = state.retainedPhotos.slice(2).map((src, index) => src ? `<div class="legacy-photo"><img data-media-pending data-photo-index="${index + 2}" alt="Foto ${index + 3}"><button type="button" class="btn-secondary" data-remove-extra-photo="${index + 2}">Rimuovi foto ${index + 3}</button></div>` : "").join("");
+    gallery.querySelectorAll("img").forEach(image => image.mediaValue = state.retainedPhotos[Number(image.dataset.photoIndex)]);
+    CSEMedia.bindImages(gallery);
+    gallery.querySelectorAll("[data-remove-extra-photo]").forEach(button => button.addEventListener("click", () => {
+        CSEMedia.releaseTemporary(state.retainedPhotos[Number(button.dataset.removeExtraPhoto)]);
+        state.retainedPhotos.splice(Number(button.dataset.removeExtraPhoto), 1);
+        state.inspectionDirty = true;
+        renderAdditionalPhotos();
+    }));
 }
 
 function renderLegacyPhotos(card) {
     const gallery = card.querySelector("[data-legacy-photos]");
     const photos = card.findingData.photos || [];
     gallery.hidden = !photos.some(Boolean);
-    gallery.innerHTML = photos.map((src, index) => src ? `<div class="legacy-photo"><img src="${escapeHtml(src)}" alt="Foto ${index + 1} del rilievo"><button type="button" class="btn-secondary" data-remove-legacy-photo="${index}">Rimuovi foto ${index + 1}</button></div>` : "").join("");
+    gallery.innerHTML = photos.map((src, index) => src ? `<div class="legacy-photo"><img data-media-source="${escapeHtml(src)}" alt="Foto ${index + 1} del rilievo"><button type="button" class="btn-secondary" data-remove-legacy-photo="${index}">Rimuovi foto ${index + 1}</button></div>` : "").join("");
+    CSEMedia.bindImages(gallery);
     gallery.querySelectorAll("[data-remove-legacy-photo]").forEach(button => button.addEventListener("click", () => {
         card.findingData.photos.splice(Number(button.dataset.removeLegacyPhoto), 1);
         state.inspectionDirty = true;
@@ -690,8 +649,11 @@ function setInspectionBusy(busy) {
     state.busy = busy;
     els.inspectionForm.setAttribute("aria-busy", String(busy));
     els.inspectionForm.querySelectorAll("button, input, textarea, select").forEach(field => field.disabled = busy);
+    els.siteForm.querySelectorAll("button, input, textarea, select").forEach(field => field.disabled = busy);
+    document.querySelectorAll("#sites-list button, #archive-list button").forEach(button => button.disabled = busy);
     els.siteSwitcher.disabled = busy || (!!state.editingInspectionId && !els.inspectionPanel.hidden);
     els.btnManageSites.disabled = busy;
+    els.btnNewSite.disabled = busy;
     els.btnNewInspection.disabled = busy;
     els.btnCloseInspection.disabled = busy;
 }
@@ -768,9 +730,12 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
             if (document.getElementById(inputId).files.length && !image) {
                 throw new Error(`La foto ${slot} non è leggibile. Scegli un'immagine JPG o PNG.`);
             }
-            photos.push(image || state.retainedPhotos[slot - 1] || "");
+            const retained = state.retainedPhotos[slot - 1];
+            photos.push(image || (retained instanceof Blob ? await compressFile(retained, 1600, 0.82) : retained) || "");
         }
-        photos.push(...state.retainedPhotos.slice(2));
+        for (const retained of state.retainedPhotos.slice(2)) {
+            photos.push(retained instanceof Blob ? await compressFile(retained, 1600, 0.82) : retained);
+        }
 
         const existing = state.inspections.find(item => item.id === state.editingInspectionId);
         const now = new Date().toISOString();
@@ -802,11 +767,10 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
             photos
         };
 
-        const inspections = existing
-            ? state.inspections.map(item => item.id === existing.id ? inspection : item)
-            : [inspection, ...state.inspections];
-        saveJson(STORAGE.inspections, inspections);
-        state.inspections = inspections;
+        const saved = await CSEStorage.saveInspection(inspection);
+        state.inspections = existing
+            ? state.inspections.map(item => item.id === existing.id ? saved : item)
+            : [saved, ...state.inspections];
         clearInspectionForm();
         els.inspectionPanel.hidden = true;
         els.siteSwitcher.disabled = false;
@@ -817,7 +781,7 @@ async function saveInspection(event, completionStatus = "COMPLETATO") {
     } catch (error) {
         console.error(error);
         setInspectionStatus(error.name === "QuotaExceededError"
-            ? "Spazio di archiviazione esaurito. Il verbale non è stato salvato; i dati inseriti sono ancora disponibili."
+            ? "Lo spazio del dispositivo riservato al browser è esaurito. Il verbale precedente è intatto e le modifiche, comprese le foto, restano nel modulo. Libera spazio e riprova senza chiudere questa pagina."
             : error.message || "Salvataggio non riuscito. I dati inseriti sono ancora disponibili.", true);
     } finally {
         setInspectionBusy(false);
@@ -922,7 +886,9 @@ async function handleReportAction(action, id) {
     if (state.busy) return;
     const report = state.inspections.find(item => item.id === id);
     if (!report) return;
-
+    const writing = action === "toggle" || action === "duplicate";
+    if (writing) setInspectionBusy(true);
+    try {
     if (action === "view") viewInspection(report);
     if (action === "edit") openInspection(report);
     if (action === "pdf") {
@@ -932,7 +898,7 @@ async function handleReportAction(action, id) {
     if (action === "toggle") {
         const inspections = state.inspections.map(item => item.id === id
             ? { ...item, status: item.status === "ARCHIVIATO" ? "ATTIVO" : "ARCHIVIATO" } : item);
-        try { saveJson(STORAGE.inspections, inspections); }
+        try { await CSEStorage.saveInspection(inspections.find(item => item.id === id)); }
         catch { alert("Stato non salvato. Verifica lo spazio disponibile nel browser."); return; }
         state.inspections = inspections;
         renderArchive();
@@ -945,12 +911,15 @@ async function handleReportAction(action, id) {
         copy.reportNumber = nextReportNumber(copy.siteId);
         copy.status = "ATTIVO";
         const inspections = [copy, ...state.inspections];
-        try { saveJson(STORAGE.inspections, inspections); }
+        try { await CSEStorage.saveInspection(copy); }
         catch { alert("Duplicazione non riuscita. Verifica lo spazio disponibile nel browser."); return; }
         state.inspections = inspections;
         renderArchive();
     }
     if (action === "share") condividiReport(report);
+    } finally {
+        if (writing) setInspectionBusy(false);
+    }
 }
 
 function viewInspection(report) {
@@ -967,7 +936,7 @@ function viewInspection(report) {
         ["Fabbricato", model.general.fabbricato], ["Piano", model.general.piano],
         ["Attività sospese", model.general.sospensioneLavori], ["Note", model.notes || model.general.notes]
     ];
-    const gallery = photos => `<div class="report-photo-gallery">${photos.filter(Boolean).map((src, i) => `<img src="${escapeHtml(src)}" alt="Foto ${i + 1}" loading="lazy">`).join("")}</div>`;
+    const gallery = photos => `<div class="report-photo-gallery">${photos.filter(Boolean).map((src, i) => `<img data-media-source="${escapeHtml(src)}" alt="Foto ${i + 1}">`).join("")}</div>`;
     document.getElementById("report-view-content").innerHTML = `
         <dl class="report-details">${details.map(([label, text]) => `<div><dt>${label}</dt><dd class="report-text">${escapeHtml(text || "Non indicato")}</dd></div>`).join("")}</dl>
         ${model.findings.map(finding => `<section class="view-finding"><h3>Rilievo ${finding.number}</h3>
@@ -975,6 +944,7 @@ function viewInspection(report) {
             ${gallery(finding.photos || [])}</section>`).join("")}
         ${model.photos?.some(Boolean) ? `<section class="view-finding"><h3>Foto del sopralluogo</h3>${gallery(model.photos)}</section>` : ""}
     `;
+    CSEMedia.bindImages(document.getElementById("report-view-content"));
     panel.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -1344,7 +1314,8 @@ function addImageContain(pdf, img, x, y, boxW, boxH) {
     pdf.addImage(img, imageType(img.src), dx, dy, w, h);
 }
 
-function loadImage(src) {
+async function loadImage(src) {
+    src = await CSEMedia.pdfSource(src);
     return new Promise(resolve => {
         if (!src) {
             resolve(null);
@@ -1427,36 +1398,8 @@ async function readMultipleImages(input, maxDim, quality) {
     return images.filter(Boolean);
 }
 
-function compressFile(file, maxDim = 1000, quality = 0.78) {
-    return new Promise(resolve => {
-        const reader = new FileReader();
-        reader.onload = event => {
-            const img = new Image();
-            img.onload = () => {
-                const canvas = document.createElement("canvas");
-                const ctx = canvas.getContext("2d");
-                let w = img.width;
-                let h = img.height;
-
-                if (w > h && w > maxDim) {
-                    h = Math.round(h * maxDim / w);
-                    w = maxDim;
-                } else if (h > maxDim) {
-                    w = Math.round(w * maxDim / h);
-                    h = maxDim;
-                }
-
-                canvas.width = w;
-                canvas.height = h;
-                ctx.drawImage(img, 0, 0, w, h);
-                resolve(canvas.toDataURL("image/jpeg", quality));
-            };
-            img.onerror = () => resolve("");
-            img.src = event.target.result;
-        };
-        reader.onerror = () => resolve("");
-        reader.readAsDataURL(file);
-    });
+function compressFile(file, maxDim = 1600, quality = 0.82) {
+    return CSEMedia.compress(file, maxDim, quality);
 }
 
 function value(id) {

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="CSE PRO - gestione cantieri, sopralluoghi, rilievi multipli e verbali PDF Romeo Safety.">
     <title>CSE PRO - Romeo Safety Italia</title>
-    <link rel="stylesheet" href="style2.css?v=20261013">
+    <link rel="stylesheet" href="style2.css?v=20261013-idb">
 </head>
 <body>
     <div class="contenitore-principale">
@@ -18,6 +18,9 @@
                 <h1>Verbale sopralluogo CSE</h1>
             </div>
         </header>
+
+        <p id="storage-status" class="status-message" role="status" aria-live="polite">Caricamento archivio...</p>
+        <button type="button" class="btn-secondary" id="btn-retry-storage" hidden>Riprova apertura archivio</button>
 
         <section class="active-site-card" aria-labelledby="active-site-title">
             <div>
@@ -187,6 +190,9 @@
                             <button type="button" class="btn-secondary" data-remove-photo="2" hidden>Rimuovi foto 2</button>
                         </div>
                     </div>
+                    <div id="inspection-additional-photos" class="legacy-photos"></div>
+                    <label class="btn-secondary photo-picker" for="inspection-more-photos">Aggiungi fotografie</label>
+                    <input class="visually-hidden" type="file" id="inspection-more-photos" accept="image/*" multiple>
                 </section>
 
                 <details class="finding-options">
@@ -301,7 +307,9 @@
 
     <script src="jspdf.umd.min.js"></script>
     <script src="assets.js"></script>
+    <script src="storage.js?v=20261013-idb"></script>
+    <script src="media.js?v=20261013-idb"></script>
     <script src="report-model.js?v=20261013"></script>
-    <script src="script.js?v=20261013"></script>
+    <script src="script.js?v=20261013-idb"></script>
 </body>
 </html>
